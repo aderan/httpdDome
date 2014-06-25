@@ -18,7 +18,7 @@ logger_t* logger_init();
 void logger_destroy(logger_t *logger);
 
 void logger_set_level(logger_t *logger, int level);
-void logger_set_callback(logger_t*logger, logger_callback_t callback, void *cls);
+void logger_set_callback(logger_t *logger, logger_callback_t callback, void *cls);
 
 void logger_log(logger_t *logger, int level, const char*fmt, ...);
 

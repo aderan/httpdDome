@@ -13,7 +13,7 @@ struct logger_s {
 	int level;
 	void *cls;
 	logger_callback_t callback;
-}
+};
 
 logger_t *
 logger_init()
@@ -35,7 +35,6 @@ void logger_destory (logger_t *logger)
 	MUTEX_DESTROY(logger->lvl_mutex);
 	free (logger);
 }
-
 
 void 
 logger_set_level(logger_t *logger, int level)
@@ -90,7 +89,7 @@ logger_log(logger_t *logger, int level, const char *fmt, ...)
 	char buffer[4096];
 	va_list ap;
 
-	MUTEX_LOCK(logger->lvl_metex)
+	MUTEX_LOCK(logger->lvl_mutex);
 	if (level > logger->level) {
 		MUTEX_UNLOCK(logger->lvl_mutex);
 		return;
@@ -114,7 +113,7 @@ logger_log(logger_t *logger, int level, const char *fmt, ...)
 			fprintf (stderr, "%s\n", local);
 			free (local);
 		} else {
-			printf(stderr, "%s\n", buffer);
+			fprintf(stderr, "%s\n", buffer);
 		}
 	}
 }

@@ -148,6 +148,167 @@ httpd_remove_connection (httpd_t *httpd, http_connection_t *connection)
 	httpd->open_connections--;
 }
 
+static THREAD_RETVAL
+httpd_thread(void *arg)
+{
+	httpd_t *httpd = arg;
+	char buffer[1024];
+	int i;
+
+	assert(httpd);
+
+	while (1) {
+		fd_set rfds;
+		struct timeval tv;
+		int nfds=0;
+		int ret;
+
+		MUTEX_LOCK (httpd->run_mutex);
+		if (!httpd->running){
+			MUTEX_UNLOCK(httpd->run_mutex);
+			break;
+		}
+		MUTEX_UNLOCK (httpd->run_mutex);
+
+		tv.tv_sec = 0;
+		tv.tv_usec = 5000;
+		
+		FD_ZERO(&rfds);
+		if (httpd->open_connections < httpd->max_connections) {
+			FD_SET(httpd->server_fd4, &rfds);
+			nfds = httpd->server_fd4+1;
+			//Should not use magic num;
+			if (httpd->server_fd6 != -1) {
+				FD_SET(httpd->server_fd6, &rfds);
+				if (nfds <= httpd->server_fd6) 
+					nfds = httpd->server_fd6 + 1;
+			}
+		}
+
+		for (i=1; i< httpd->max_connections; i++){
+			int socket_fd;
+			if (!httpd->connections[i].connected) 
+				continue;
+			socket_fd = httpd->connections[i].socket_fd;
+			FD_SET(socket_fd, &rfds);
+			if (nfds <= socket_fd) {
+				nfds = socket_fd + 1;
+		}
+
+		ret = select (nfds, &rfds, NULL, NULL, &tv);
+		if (ret == 0){
+			continue;
+		} else if (ret == -1) {
+			logger_log(httpd->logger, LOGGER_INFO, "Error in select");
+			break;
+		}
+
+		if (FD_ISSET(httpd->server_fd4, &rfds)) {
+			ret = httpd_accept_connection(httpd, httpd->server_fd4, 0);
+			if (ret == -1)
+				break;
+			else if (ret < 0)
+				continue;
+		}
+		for (i=0;i<httpd->max_connections; i++){
+			http_connections_t *connection = &httpd->connections[i];
+
+			if (!connection->connected)
+				continue;
+			if (!FD_ISSET(connection->socket_fd, &rfds))
+				continue;
+
+			if (!connection->request) {
+				connection->request = http_request_init();
+				assert (connection->request);
+			}
+
+			logger_log(httpd->logger, LOGGER_DEBUG, "Receiving on socket %d", connection->socket_fd);
+			ret = recv(connection->socket_fd, buffer, sizeof(buffer) ,0);
+			if (ret == 0){
+				logger_log(httpd->logger, LOGGER_INFO, "Connection Close for socket %d", connection->socket_fd);
+				httpd_remove_connection(httpd, connection);
+				continue;
+			}
+
+			if (!strncmp (buffer, "HTTP/", strlen("HTTP/"))) {
+				logger_log(httpd->logger, LOGGER_INFO, "Got reverse resones");
+				continue;
+			}
+
+			http_request_add_data(connection->request, buffer, ret);
+			if (http_request_has_error(connection->request)) {
+				logger_log(httpd->logger, LOGGER_INFO, "Error in parsing: %s", httpd_request_get_error_name(connection->request));
+				httpd_remove_conncetion(httpd, connection);
+				continue;
+			}
+
+			if (http_request_is_complete(connection->request)){
+				http_response_t *response = NULL;
+				int datalen;
+			}
+
+			httpd->callbacks.conn_request(connection->user_data, connections->socket_fd, connection->request, &response);
+			http_request_destroy(connection->request);
+			connection->request = NULL;
+			
+			if (response) {
+				const char *data;
+				int datalen;
+				int written;
+				int ret;
+
+				data = http_response_get_data(response, &datalen);
+
+				written = 0;
+				while (written < datalen){
+					ret = send(connection->socket_fd, data+written, datalen-written, 0);
+					if (ret == -1){
+						logger_log(httpd->logger, LOGGER_INFO, "Error int sending data");
+						break;
+					}
+
+					written += ret;
+				}
+
+				if (http_response_get_disconect(response)) {
+					logger_log (httpd->logger, LOGGER_INFO, "Disconnection on software request");
+					httpd_remove_connection(httpd, connection);
+				}else {
+					logger_log(httpd->logger, LOGGER_INFO, "Didn't get responese");
+				}
+				http_response_destroy (response);
+			} else{
+				logger_log(httpd->logger, LOGGER_DEBUG, "Request not complete, waiting for more data...");
+			}
+		}
+	}
+
+	for (i=0; i< httpd->max_connections; i++) {
+		http_connection_t *connection = &httpd->connections[i];
+		
+		//Use Tmp make line Low
+		if (!connection->connected) 
+			continue;
+		logger_log (httpd->logger, LOGGER_INFO, "Removeing connection for socket %d", connection->socket_fd);
+		httpd_remove_connection(httpd, connection);
+	}
+
+	if (httpd->server_fd4 != -1) {
+		closesocket(httpd->server_fd4);
+		httpd->server_fd4 = -1;
+	}
+
+	if (httpd->server_fd6 != -1){
+		closesocket(httpd->server_fd6);
+		httpd->server_fd6 = -1;
+	}
+
+	logger_log (httpd->logger, LOGGER_INFO, "Exiting HTTP thread");
+
+	return 0;
+}
+
 int
 httpd_start (httpd_t *httpd, unsigned short *port)
 {
